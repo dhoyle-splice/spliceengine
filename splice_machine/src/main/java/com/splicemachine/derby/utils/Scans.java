@@ -17,7 +17,6 @@ package com.splicemachine.derby.utils;
 import com.carrotsearch.hppc.BitSet;
 import com.splicemachine.db.iapi.error.StandardException;
 import com.splicemachine.db.iapi.services.io.FormatableBitSet;
-import com.splicemachine.db.iapi.sql.dictionary.DataDictionary;
 import com.splicemachine.db.iapi.sql.execute.ExecRow;
 import com.splicemachine.db.iapi.store.access.Qualifier;
 import com.splicemachine.db.iapi.types.*;
@@ -29,9 +28,12 @@ import com.splicemachine.si.constants.SIConstants;
 import com.splicemachine.si.impl.driver.SIDriver;
 import com.splicemachine.storage.DataScan;
 import com.splicemachine.storage.EntryPredicateFilter;
+import com.splicemachine.utils.Pair;
 import org.apache.log4j.Logger;
 
 import java.io.IOException;
+
+import static com.splicemachine.db.shared.common.reference.SQLState.PARAMETER_CANNOT_BE_NULL;
 
 /**
  * Utility methods and classes related to building HBase Scans
@@ -119,6 +121,48 @@ public class Scans extends SpliceUtils {
         }
         return scan;
     }
+
+
+    public static Pair<byte[],byte[]> setupScanKey(DataValueDescriptor[] startKeyValue, int startSearchOperator,
+                                 DataValueDescriptor[] stopKeyValue, DataValueDescriptor[] stopKeyPrefix, int stopSearchOperator,
+                                 boolean[] sortOrder,
+                                 int[] formatIds,
+                                 int[] keyDecodingMap,
+                                 int[] keyTablePositionMap,
+                                 DataValueFactory dataValueFactory,
+                                 String tableVersion,
+                                 boolean rowIdKey,
+                                 ExecRow scannedRow) throws StandardException {
+        assert dataValueFactory != null;
+        try {
+            if (rowIdKey) {
+                DataValueDescriptor[] dvd = null;
+                if (startKeyValue != null && startKeyValue.length > 0) {
+                    dvd = new DataValueDescriptor[1];
+                    dvd[0] = new HBaseRowLocation(Bytes.fromHex(startKeyValue[0].getString()));
+                    startKeyValue = dvd;
+                }
+                if (stopKeyValue != null && stopKeyValue.length > 0) {
+                    dvd = new DataValueDescriptor[1];
+                    dvd[0] = new HBaseRowLocation(Bytes.fromHex(stopKeyValue[0].getString()));
+                    stopKeyValue = dvd;
+                }
+            }
+            return getScanKey(startKeyValue, startSearchOperator,
+                              stopKeyValue, stopKeyPrefix, stopSearchOperator,
+                              sortOrder, formatIds, keyTablePositionMap, keyDecodingMap,
+                              dataValueFactory, tableVersion, rowIdKey, scannedRow);
+
+//            if (!rowIdKey) {
+//                buildPredicateFilter(qualifiers, scanColumnList, scan, keyDecodingMap);
+//            }
+
+
+        } catch (IOException e) {
+            throw Exceptions.parseException(e);
+        }
+    }
+
 
     public static DataScan setupScan(DataValueDescriptor[] startKeyValue, int startSearchOperator,
                                  DataValueDescriptor[] stopKeyValue, int stopSearchOperator,
@@ -262,6 +306,87 @@ public class Scans extends SpliceUtils {
         }
     }
 
+    private static Pair<byte[],byte[]> getScanKey(DataValueDescriptor[] startKeyValue, int startSearchOperator,
+                                                  DataValueDescriptor[] stopKeyValue, DataValueDescriptor[] stopKeyPrefix,
+                                                  int stopSearchOperator,
+                                                  boolean[] sortOrder,
+                                                  int[] columnTypes, //the types of the column in the ENTIRE Row
+                                                  int[] keyTablePositionMap, //the location in the ENTIRE row of the key columns
+                                                  int[] keyDecodingMap,
+                                                  DataValueFactory dataValueFactory,
+                                                  String tableVersion,
+                                                  boolean rowIdKey,
+                                                  ExecRow scannedRow) throws IOException, StandardException {
+        byte[] startRow;
+        byte[] stopRow;
+        try {
+            boolean generateStartKey = false;
+            boolean generateStopKey = false;
+
+            if (startKeyValue != null) {
+                generateStartKey = true;
+                for (int i = 0; i < startKeyValue.length; i++) {
+                    DataValueDescriptor startDesc = startKeyValue[i];
+                    if (startDesc == null) {
+                        generateStartKey = false; // if any null encountered, don't make a start key
+                        break;
+                    }
+
+                    // we just rely on key table positions
+                    if (!isEmpty(keyDecodingMap) && keyDecodingMap[i] >= 0 && !isEmpty(keyTablePositionMap)) {
+                        DataValueDescriptor targetDesc = scannedRow.getColumn(keyTablePositionMap[keyDecodingMap[i]] + 1);
+                        if (!rowIdKey) {
+                            startKeyValue[i] = QualifierUtils.adjustDataValueDescriptor(startDesc, targetDesc, dataValueFactory);
+                        }
+                    }
+                }
+            }
+            DataValueDescriptor[] stop = stopKeyValue;
+            if (stop == null)
+                stop = stopKeyPrefix;
+            if (stop != null) {
+                generateStopKey = true;
+                for (int i = 0; i < stop.length; i++) {
+                    DataValueDescriptor stopDesc = stop[i];
+                    if (stopDesc == null) {
+                        generateStopKey = false; // if any null encountered, don't make a stop key
+                        break;
+                    }
+
+                    //  we just rely on key table positions
+                    if (!isEmpty(keyDecodingMap) && !isEmpty(keyTablePositionMap)) {
+                        DataValueDescriptor targetDesc = scannedRow.getColumn(keyTablePositionMap[keyDecodingMap[i]] + 1);
+                        if (!rowIdKey) {
+                            stop[i] = QualifierUtils.adjustDataValueDescriptor(stopDesc, targetDesc, dataValueFactory);
+                        }
+                    }
+                }
+            }
+
+            if (generateStartKey) {
+                startRow = DerbyBytesUtil.generateScanKeyForIndex(startKeyValue, startSearchOperator, sortOrder, tableVersion, rowIdKey);
+                if (startRow == null)
+                    throw StandardException.newException(PARAMETER_CANNOT_BE_NULL, "startRow");
+            }
+            else
+                throw StandardException.newException(PARAMETER_CANNOT_BE_NULL, "startRow");
+
+            if (generateStopKey) {
+                stopRow = DerbyBytesUtil.generateScanKeyForIndex(stop, stopSearchOperator, sortOrder, tableVersion, rowIdKey);
+                if (stopKeyPrefix != null) {
+                    stopRow = Bytes.unsignedCopyAndIncrement(stopRow);
+                }
+                if (stopRow == null)
+                    throw StandardException.newException(PARAMETER_CANNOT_BE_NULL, "stopRow");
+            }
+            else
+                throw StandardException.newException(PARAMETER_CANNOT_BE_NULL, "stopRow");
+        } catch (StandardException e) {
+            throw new IOException(e);
+        }
+        return new Pair(startRow,stopRow);
+    }
+
     private static boolean isEmpty(int[] array) {
         return array == null || array.length == 0;
     }
@@ -326,8 +451,7 @@ public class Scans extends SpliceUtils {
             row_qualifies =
                     columnValue.compare(
                             q.getOperator(),
-                            (probeValue==null || i >= numProbeValues) ? q.getOrderable():
-                            (numProbeValues == 1 ? probeValue : ((ListDataType) probeValue).getDVD(i)),
+                            q.getOrderable(),
                             q.getOrderedNulls(),
                             q.getUnknownRV());
             

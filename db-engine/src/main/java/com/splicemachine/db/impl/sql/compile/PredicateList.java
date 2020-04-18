@@ -251,13 +251,15 @@ public class PredicateList extends QueryTreeNodeVector<Predicate> implements Opt
     }
 
     @Override
-    public void markAllPredicatesQualifiers(){
+    public void markAllPredicatesQualifiers() throws StandardException{
         int size=size();
+        numberOfQualifiers = 0;
         for(int index=0;index<size;index++){
-            elementAt(index).markQualifier();
+            if (!elementAt(index).isInListProbePredicate()) {
+                elementAt(index).markQualifier();
+                numberOfQualifiers++;
+            }
         }
-
-        numberOfQualifiers=size;
     }
 
     @Override
@@ -1196,7 +1198,8 @@ public class PredicateList extends QueryTreeNodeVector<Predicate> implements Opt
                         numColsInStartPred = thisPred.numColumnsInQualifier();
                         thisPredMarked=true;
                         seenGT=(thisPred.getStartOperator(optTable)==ScanController.GT);
-                        thisPred.markQualifier();
+                        if (!thisPred.isInListProbePredicate())
+                            thisPred.markQualifier();
                     }
                 }
             }
@@ -1217,7 +1220,8 @@ public class PredicateList extends QueryTreeNodeVector<Predicate> implements Opt
                         numColsInStopPred = thisPred.numColumnsInQualifier();
                         thisPredMarked=true;
                         seenGE=(thisPred.getStopOperator(optTable)==ScanController.GE);
-                        thisPred.markQualifier();
+                        if (!thisPred.isInListProbePredicate())
+                            thisPred.markQualifier();
                     }
                 }
             }
@@ -1663,8 +1667,12 @@ public class PredicateList extends QueryTreeNodeVector<Predicate> implements Opt
         }
     }
 
-    private void countScanFlags(){
+    public void countScanFlags(){
         Predicate predicate;
+
+        numberOfStartPredicates = 0;
+        numberOfStopPredicates  = 0;
+        numberOfQualifiers      = 0;
 
         int size=size();
         for(int index=0;index<size;index++){
@@ -2676,10 +2684,10 @@ public class PredicateList extends QueryTreeNodeVector<Predicate> implements Opt
      * class after it in the list.  (Actually, we remove all of the predicates
      * in the same equivalence class that appear after this one.)
      */
-    void removeRedundantPredicates(){
-            /* Walk backwards since we may remove 1 or more
-           * elements for each predicate in the outer pass.
-             */
+    void removeRedundantPredicates() throws StandardException {
+    		/* Walk backwards since we may remove 1 or more
+	       * elements for each predicate in the outer pass.
+		     */
         int outer=size()-1;
         while(outer>=0){
             Predicate predicate=elementAt(outer);
@@ -2719,7 +2727,8 @@ public class PredicateList extends QueryTreeNodeVector<Predicate> implements Opt
                             // we mark a start/stop as qualifier if we have already seen a previous column in composite
                             // index whose RELOPS do not include '=' or IS NULL. And hence we should not disregard
                             // the qualifier flag of inner predicate
-                            if(!predicate.isQualifier()){
+                            if(!predicate.isQualifier() &&
+                               !predicate.isInListProbePredicate()){
                                 predicate.markQualifier();
                                 numberOfQualifiers++;
                             }
@@ -3286,7 +3295,7 @@ public class PredicateList extends QueryTreeNodeVector<Predicate> implements Opt
                     num_of_or_conjunctions++;
                 }
                 else
-                if (elementAt(i).isInListProbePredicate()) {
+                if (elementAt(i).isInListProbePredicate() && elementAt(i).isQualifier()) {
                     InListOperatorNode ilop = elementAt(i).getSourceInList(true);
                     if (ilop != null)
                         numExtraInListColumns += (ilop.leftOperandList.size()-1);
