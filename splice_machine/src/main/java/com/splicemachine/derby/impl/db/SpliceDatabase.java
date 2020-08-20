@@ -415,6 +415,15 @@ public class SpliceDatabase extends BasicDatabase{
                         }
                         SpliceLogUtils.info(LOG,"set replication role to %s", role);
                         break;
+                    case ROLLING_UPGRADE:
+                        DDLMessage.RollingUpgrade.OperationType type = change.getRollingUpgrade().getType();
+                        if (type == DDLMessage.RollingUpgrade.OperationType.BEGIN) {
+                            SIDriver.driver().setRollingUpgrade(true);
+                        }
+                        else if (type == DDLMessage.RollingUpgrade.OperationType.END) {
+                            SIDriver.driver().setRollingUpgrade(false);
+                        }
+                        break;
                     case NOTIFY_JAR_LOADER:
                         DDLUtils.preNotifyJarLoader(change,dataDictionary,dependencyManager);
                         break;
@@ -432,6 +441,9 @@ public class SpliceDatabase extends BasicDatabase{
                         break;
                     case UPDATE_SYSTEM_PROCEDURES:
                         DDLUtils.preUpdateSystemProcedures(change, dataDictionary);
+                        break;
+                    default:
+                        break;
                 }
                 final List<DDLAction> ddlActions = new ArrayList<>();
                 ddlActions.add(new AddIndexToPipeline());
